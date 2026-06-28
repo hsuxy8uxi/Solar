@@ -74,7 +74,206 @@
     chars.splice(insertAt, 0, heart);
   }
 
-  installHeartWave();
+  function oscillatorConfig(kind) {
+    if (kind === "square") return {
+      type: "square",
+      mouth: { pattern: "texture/puppets_square@2x.png" },
+      body: { middle: g => {
+        const width = 465, height = 420;
+        g.drawRoundedRect(-width / 2, -height, width, height, 30);
+      } },
+      volume: -20
+    };
+    if (kind === "sawtooth") return {
+      type: "sawtooth",
+      mouthY: -125,
+      mouth: { pattern: "texture/puppets_saw@2x.png" },
+      eyeY: 220,
+      body: { middle: g => {
+        const width = 465, height = 350, spike = 120;
+        g.moveTo(-width / 2, 0);
+        g.lineTo(-width / 2, -height);
+        g.lineTo(-width / 6, -height - spike);
+        g.lineTo(-width / 6, -height);
+        g.lineTo(width / 6, -height - spike);
+        g.lineTo(width / 6, -height);
+        g.lineTo(width / 2, -height - spike);
+        g.lineTo(width / 2, -height);
+        g.lineTo(width / 2, 0);
+      } },
+      volume: -20,
+      color: 0xffb729
+    };
+    if (kind === "triangle") return {
+      type: "triangle",
+      mouthY: -100,
+      armX: 130,
+      armY: -180,
+      armSpacing: 70,
+      armRotation: 0.6,
+      mouth: { pattern: "texture/puppets_triangle@2x.png", scale: 0.6, radius: 0.8 },
+      body: { middle: g => {
+        g.moveTo(195, 0);
+        g.bezierCurveTo(223, 0, 241, -31, 227, -55);
+        g.lineTo(32, -394);
+        g.bezierCurveTo(25, -406, 12.5, -412.5, 0, -412.5);
+        g.bezierCurveTo(-25, -406, -12.5, -412.5, -32, -394);
+        g.lineTo(-227, -55);
+        g.bezierCurveTo(-241, -31, -223, 0, -195, 0);
+      } },
+      eyeY: 210,
+      eyeDisplacement: 10,
+      volume: -10,
+      color: 0xff4582
+    };
+    if (kind === "heart") return {
+      type: "sine",
+      mouthY: -128,
+      eyeY: 190,
+      armX: 205,
+      armY: -190,
+      armSpacing: 50,
+      armRotation: -0.22,
+      eyeDisplacement: 36,
+      volume: -13,
+      vibratoStrength: 18,
+      color: 0xe94b8a,
+      mouth: { pattern: "texture/puppets_sine@2x.png", scale: 0.62, radius: 0.8 },
+      body: { middle: g => {
+        g.moveTo(0, 0);
+        g.bezierCurveTo(-290, -152, -277, -410, -97, -410);
+        g.bezierCurveTo(-41, -410, -11, -378, 0, -337);
+        g.bezierCurveTo(11, -378, 41, -410, 97, -410);
+        g.bezierCurveTo(277, -410, 290, -152, 0, 0);
+      } }
+    };
+    if (kind === "star") return {
+      type: "sine",
+      mouthY: -126,
+      eyeY: 230,
+      armX: 205,
+      armY: -205,
+      armSpacing: 38,
+      armRotation: -0.64,
+      eyeDisplacement: 35,
+      volume: -14,
+      vibratoStrength: 28,
+      color: 0xffd13b,
+      mouth: { pattern: "texture/puppets_sine@2x.png", scale: 0.62, radius: 0.8 },
+      body: { middle: g => {
+        const outer = 250;
+        const inner = 112;
+        const centerY = -185;
+        let firstX = 0, firstY = 0;
+        for (let i = 0; i < 10; i++) {
+          const radius = i % 2 === 0 ? outer : inner;
+          const angle = -Math.PI / 2 + i * Math.PI / 5;
+          const x = Math.cos(angle) * radius;
+          const y = centerY + Math.sin(angle) * radius;
+          if (i === 0) {
+            firstX = x;
+            firstY = y;
+            g.moveTo(x, y);
+          } else {
+            g.lineTo(x, y);
+          }
+        }
+        g.lineTo(firstX, firstY);
+      } }
+    };
+    return {
+      type: "sine",
+      mouth: { pattern: "texture/puppets_sine@2x.png" },
+      body: { middle: g => {
+        const width = 465;
+        g.drawEllipse(0, -width / 2, width / 2, width / 2 * 0.95);
+      } },
+      eyeY: 170,
+      eyeDisplacement: 30,
+      color: 0x00b6ee,
+      volume: -10
+    };
+  }
+
+  function finishHeartCharacter(c) {
+    c.__isHeartWave = true;
+    c.__soundType = "heart";
+    c.type = "sine";
+    c.color = 0xe94b8a;
+    c.cssColor = "#e94b8a";
+    c.bodyContainer.position.y += 17;
+    c.armContainer.position.y += 28;
+    c.eyes.container.position.y += 8;
+    c.mouth.container.position.y += 8;
+    c.container.position.y = c.container.height / 4;
+  }
+
+  function makeCustomLayer(freq, destination, type = "sine") {
+    let layer = null;
+    try {
+      layer = new w.Tone.Oscillator({ frequency: freq, type });
+    } catch {
+      try { layer = new w.Tone.Oscillator(freq, type); } catch {}
+    }
+    if (!layer) return null;
+    try { layer.connect(destination); } catch { try { layer.toDestination(); } catch {} }
+    try { layer.volume.value = -Infinity; } catch {}
+    return layer;
+  }
+
+  function installStarVoice(c) {
+    if (!c) return;
+    c.__isStarWave = true;
+    c.__soundType = "star";
+    c.type = "sine";
+    c.volume = -14;
+    try { c.osc.type = "sine"; } catch {}
+    try { c.vibrato.frequency.value = 9.5; } catch {}
+    if (c.__starVoiceReady || !w.Tone || typeof w.Tone.Oscillator !== "function") return;
+    const base = Number(c.currentFrequency || c.osc?.frequency?.value || 440);
+    c.__starLayers = [
+      { ratio: 1.5, offset: -13, osc: makeCustomLayer(base * 1.5, c.vol, "sine") },
+      { ratio: 2.25, offset: -18, osc: makeCustomLayer(base * 2.25, c.vol, "triangle") },
+      { ratio: 4.02, offset: -24, osc: makeCustomLayer(base * 4.02, c.vol, "sine") }
+    ].filter(layer => layer.osc);
+    c.__starVoiceReady = true;
+  }
+
+  function finishStarCharacter(c) {
+    c.__isStarWave = true;
+    c.__soundType = "star";
+    c.__displayName = c.__displayName || "star";
+    c.type = "sine";
+    c.color = 0xffd13b;
+    c.cssColor = "#ffd13b";
+    c.bodyContainer.position.y += 8;
+    c.eyes.container.position.y += 6;
+    c.mouth.container.position.y += 8;
+    c.container.position.y = c.container.height / 4;
+    installStarVoice(c);
+  }
+
+  function installStarWave() {
+    const oldStarIndex = chars.findIndex(c => c.__isStarWave);
+    if (oldStarIndex >= 0) {
+      const oldStar = chars.splice(oldStarIndex, 1)[0];
+      try { oldStar.__stopNow?.(); } catch {}
+      try { oldStar.container.parent?.removeChild(oldStar.container); } catch {}
+      try { oldStar.__domLabel?.remove(); } catch {}
+    }
+    if (typeof w.Character2 !== "function") {
+      alert("Star needs the Oscillators Character2 constructor. Try switching Console context to oscillators-service, then paste again.");
+      return;
+    }
+
+    const star = new w.Character2(oscillatorConfig("star"));
+    finishStarCharacter(star);
+    const insertAt = Math.min(3, chars.length);
+    chars.splice(insertAt, 0, star);
+  }
+
+  try { installHeartWave(); } catch (err) { console.warn("Heart install failed:", err); }
+  try { installStarWave(); } catch (err) { console.warn("Star install failed:", err); }
 
   const carousel = w.carousel;
   if (!carousel.__polyOscOriginal) {
@@ -93,6 +292,7 @@
   let songTitle = "Untitled Song";
   const disabledCharacters = new Set();
   let draggedCharacter = null;
+  let cloneSerial = 1;
   let gridOverlay = null;
   let gridSelectedKey = "square";
   let gridPlayReturn = false;
@@ -107,6 +307,7 @@
   let gridCols = gridBars * gridStepsPerBar;
   let gridEndCol = gridCols;
   const gridMaxBars = 60;
+  const gridRetriggerGap = 0.035;
   const gridCellWidth = 18;
   const gridCellHeight = 20;
   const gridLabelWidth = 52;
@@ -119,10 +320,14 @@
   let notes = [], events = [], playing = false, raf = 0, startMs = 0, eventIndex = 0, uiHidden = false;
   const hz = n => 440 * Math.pow(2, (n - 69) / 12);
   const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
-  const isVoice = c => ["square", "sawtooth", "triangle", "sine"].includes(c.type) || c.__isHeartWave;
+  const isVoice = c => ["square", "sawtooth", "triangle", "sine"].includes(c.type) || c.__isHeartWave || c.__isStarWave;
 
   function characterKey(c) {
-    return c.__isHeartWave ? "heart" : c.type;
+    return c.__cloneKey || (c.__isHeartWave ? "heart" : c.__isStarWave ? "star" : c.type);
+  }
+
+  function characterBaseKey(c) {
+    return c.__baseKey || (c.__isHeartWave ? "heart" : c.__isStarWave ? "star" : c.type);
   }
 
   function characterName(c) {
@@ -148,6 +353,7 @@
       input.checked = enabled;
     });
     refreshVoices();
+    syncCharacterToggleList();
     syncCharacterToggleOrder();
     if (currentMode === "grid") {
       refreshGridTools();
@@ -179,6 +385,37 @@
 
   function getVisibleChars() {
     return orderedVoiceChars().filter(c => isCharacterEnabled(c));
+  }
+
+  function duplicateCharacter(baseKey = gridSelectedKey) {
+    const source = characterByKey(baseKey);
+    const kind = characterBaseKey(source || { type: baseKey });
+    if (typeof w.Character2 !== "function") return alert("Cannot duplicate: Character2 is unavailable.");
+    const clone = new w.Character2(oscillatorConfig(kind));
+    if (kind === "heart") finishHeartCharacter(clone);
+    if (kind === "star") finishStarCharacter(clone);
+    clone.__baseKey = kind;
+    clone.__cloneIndex = orderedVoiceChars().filter(c => characterBaseKey(c) === kind).length + 1;
+    clone.__cloneKey = `${kind}-${++cloneSerial}`;
+    clone.__displayName = `${kind} ${clone.__cloneIndex}`;
+    clone.container.position.y = clone.container.height / 4;
+    chars.push(clone);
+    characterOrder.push(characterKey(clone));
+    patchVoice(clone);
+    installLabels();
+    syncCharacterToggleList();
+    refreshVoices();
+    if (currentMode === "grid") {
+      refreshGridTools();
+      gridSelectedKey = characterKey(clone);
+      selectGridCharacter(gridSelectedKey);
+    } else if (currentMode === "studio") {
+      applyStudioMode();
+    } else {
+      applyNormalMode();
+    }
+    const status = document.getElementById("status");
+    if (status) status.textContent = `Duplicated ${kind}. Enabled characters: ${voices.length}.`;
   }
 
   function swapCharacterOrder(a, b) {
@@ -266,6 +503,52 @@
       const label = input?.closest("label");
       if (label) box.appendChild(label);
     });
+  }
+
+  function syncCharacterToggleList() {
+    const box = document.getElementById("character-toggles");
+    if (!box) return;
+    for (const c of orderedVoiceChars()) {
+      const key = characterKey(c);
+      let input = box.querySelector(`[data-osc-character="${key}"]`);
+      let label = input?.closest("label");
+      if (!label) {
+        label = document.createElement("label");
+        label.title = key === "heart" ? "Show or remove Heart in Normal and Grid modes" : "Show or hide this character";
+        label.style.cssText = "display:flex;align-items:center;gap:7px;min-width:0";
+        input = document.createElement("input");
+        input.type = "checkbox";
+        input.checked = isCharacterEnabled(c);
+        input.dataset.oscCharacter = key;
+        const name = document.createElement("span");
+        name.style.cssText = `overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:${c.cssColor};flex:1`;
+        name.textContent = characterName(c);
+        label.append(input, name);
+      }
+      input.checked = isCharacterEnabled(c);
+      let name = label.querySelector("span");
+      if (name) {
+        name.textContent = characterName(c);
+        name.style.color = c.cssColor;
+      }
+      let dup = label.querySelector("[data-duplicate-character]");
+      if (!dup) {
+        dup = document.createElement("button");
+        dup.type = "button";
+        dup.textContent = "+";
+        dup.title = "Duplicate this oscillator";
+        dup.style.cssText = "width:24px;height:24px;border:1px solid #222;border-radius:6px;background:#ffb729;color:#111;font:900 15px system-ui;cursor:pointer;flex:0 0 auto";
+        label.appendChild(dup);
+      }
+      dup.dataset.duplicateCharacter = key;
+      dup.onclick = e => {
+        e.preventDefault();
+        e.stopPropagation();
+        duplicateCharacter(key);
+      };
+      input.onchange = () => setCharacterEnabled(key, input.checked);
+      box.appendChild(label);
+    }
   }
 
   function installCharacterDragging() {
@@ -948,6 +1231,12 @@
       selectedCharacter: gridSelectedKey,
       characterOrder: [...characterOrder],
       disabledCharacters: [...disabledCharacters],
+      characters: orderedVoiceChars().map(c => ({
+        key: characterKey(c),
+        baseKey: characterBaseKey(c),
+        name: characterName(c),
+        disabled: disabledCharacters.has(characterKey(c)),
+      })),
       cells: [...gridCells.entries()].map(([cell, charKey]) => ({
         cell,
         charKey,
@@ -980,6 +1269,25 @@
     gridCols = gridBars * gridStepsPerBar;
     gridEndCol = clamp(Math.round(Number(snapshot.endCol) || gridCols), 1, gridCols);
     gridSelectedKey = snapshot.selectedCharacter || gridSelectedKey;
+    if (Array.isArray(snapshot.characters)) {
+      snapshot.characters.forEach(def => {
+        const key = String(def.key || "");
+        if (!key || orderedVoiceChars().some(c => characterKey(c) === key)) return;
+        const baseKey = String(def.baseKey || key).split("-")[0];
+        if (typeof w.Character2 !== "function") return;
+        const clone = new w.Character2(oscillatorConfig(baseKey));
+        if (baseKey === "heart") finishHeartCharacter(clone);
+        if (baseKey === "star") finishStarCharacter(clone);
+        clone.__baseKey = baseKey;
+        clone.__cloneKey = key;
+        clone.__displayName = String(def.name || key);
+        const serialMatch = key.match(/-(\d+)$/);
+        if (serialMatch) cloneSerial = Math.max(cloneSerial, Number(serialMatch[1]) || cloneSerial);
+        clone.container.position.y = clone.container.height / 4;
+        chars.push(clone);
+        patchVoice(clone);
+      });
+    }
     if (Array.isArray(snapshot.characterOrder)) {
       characterOrder = snapshot.characterOrder.filter(key => orderedVoiceChars().some(c => characterKey(c) === key));
     }
@@ -1057,12 +1365,20 @@
     const tools = gridOverlay.querySelector("#grid-tools");
     tools.innerHTML = "";
     for (const c of getVisibleChars()) {
+      const wrap = document.createElement("div");
+      wrap.style.cssText = "display:flex;align-items:center;gap:4px;flex:0 0 auto";
       const btn = document.createElement("button");
       btn.dataset.gridTool = characterKey(c);
       btn.textContent = characterName(c);
       btn.style.cssText = `height:42px;min-width:88px;border:2px solid #222;border-radius:8px;color:#111;background:${c.cssColor};font:900 13px system-ui;cursor:pointer`;
       btn.onclick = () => selectGridCharacter(characterKey(c));
-      tools.appendChild(btn);
+      const dup = document.createElement("button");
+      dup.textContent = "+";
+      dup.title = `Duplicate ${characterName(c)}`;
+      dup.style.cssText = "width:32px;height:42px;border:2px solid #222;border-radius:8px;background:#ffb729;color:#111;font:900 16px system-ui;cursor:pointer";
+      dup.onclick = () => duplicateCharacter(characterKey(c));
+      wrap.append(btn, dup);
+      tools.appendChild(wrap);
     }
     if (!getVisibleChars().some(c => characterKey(c) === gridSelectedKey)) gridSelectedKey = characterKey(getVisibleChars()[0] || orderedVoiceChars()[0]);
     selectGridCharacter(gridSelectedKey);
@@ -1096,8 +1412,10 @@
         }
         end = Math.min(end, gridEndCol - 1);
         const eid = id++;
-        out.push({ type: "on", time: start * step, voiceIndex, note: lane.note, vel: 110, id: eid });
-        out.push({ type: "off", time: (end + 1) * step, voiceIndex, id: eid });
+        const onTime = start * step;
+        const offTime = Math.max(onTime + 0.035, (end + 1) * step - gridRetriggerGap);
+        out.push({ type: "on", time: onTime, voiceIndex, note: lane.note, vel: 110, id: eid });
+        out.push({ type: "off", time: offTime, voiceIndex, id: eid });
         i++;
       }
     }
@@ -1152,7 +1470,7 @@
       while (eventIndex < events.length && events[eventIndex].time <= now) {
         const e = events[eventIndex++], v = voices[e.voiceIndex];
         if (!v) continue;
-        if (e.type === "on") { v.__currentGridId = e.id; v.__startNow(e.vel); v.__setHzNow(hz(e.note)); }
+        if (e.type === "on") { v.__stopNow(); v.__currentGridId = e.id; v.__setHzNow(hz(e.note)); v.__startNow(e.vel); }
         else if (v.__currentGridId === e.id) v.__stopNow();
       }
       chars.forEach(updateLabel);
@@ -1285,6 +1603,9 @@
       this.setActive((this.activeChildIndex || 0) - 1);
     };
 
+    if (carousel.nextListener) carousel.nextListener.listener = carousel.next.bind(carousel);
+    if (carousel.prevListener) carousel.prevListener.listener = carousel.prev.bind(carousel);
+
     carousel.__polyOscNormalReady = false;
     carousel.setChildWidth(carousel.childWidth || w.innerWidth);
     carousel.setActive(Math.min(carousel.activeChildIndex || 0, Math.max(0, visible.length - 1)));
@@ -1307,6 +1628,57 @@
   }
 
   function patchVoice(v) {
+    if (!v.__polyStarUpdatePatched && typeof v.update === "function") {
+      v.__polyStarUpdatePatched = true;
+      const originalUpdate = v.update;
+      v.update = function(...args) {
+        originalUpdate.apply(this, args);
+        if (this.__isStarWave) {
+          installStarVoice(this);
+          const freq = Number(this.currentFrequency || this.osc?.frequency?.value || 440);
+          (this.__starLayers || []).forEach(layer => {
+            try {
+              layer.osc.frequency.value = freq * layer.ratio;
+              if (this.playing) {
+                layer.osc.volume.value = this.volume + layer.offset;
+                if (!layer.started) {
+                  layer.osc.start(0);
+                  layer.started = true;
+                }
+              }
+            } catch {}
+          });
+        }
+      };
+    }
+    if (v.__isStarWave && !v.__polyManualStarAudioPatched) {
+      v.__polyManualStarAudioPatched = true;
+      const originalStart = v.start;
+      const originalStop = v.stop;
+      v.start = function(...args) {
+        const result = originalStart?.apply(this, args);
+        installStarVoice(this);
+        const freq = Number(this.currentFrequency || this.osc?.frequency?.value || 440);
+        (this.__starLayers || []).forEach(layer => {
+          try {
+            layer.osc.frequency.value = freq * layer.ratio;
+            layer.osc.volume.value = this.volume + layer.offset;
+            if (!layer.started) {
+              layer.osc.start(0);
+              layer.started = true;
+            }
+          } catch {}
+        });
+        return result;
+      };
+      v.stop = function(...args) {
+        const result = originalStop?.apply(this, args);
+        (this.__starLayers || []).forEach(layer => {
+          try { layer.osc.volume.value = -Infinity; } catch {}
+        });
+        return result;
+      };
+    }
     if (v.__polyVoicePatched) return;
     v.__polyVoicePatched = true;
     v.__oscStarted = false;
@@ -1321,6 +1693,19 @@
       if (w.Tone.context.state !== "running") w.Tone.start();
       this.playing = true;
       this.osc.volume.value = this.volume + velocityDb;
+      if (this.__isStarWave) {
+        installStarVoice(this);
+        this.osc.volume.value = this.volume - 2 + velocityDb;
+        (this.__starLayers || []).forEach(layer => {
+          try {
+            layer.osc.volume.value = this.volume + layer.offset + velocityDb;
+            if (!layer.started) {
+              layer.osc.start(0);
+              layer.started = true;
+            }
+          } catch {}
+        });
+      }
       this.vibrato.amplitude.value = useVelocity ? 0.08 + amount * 0.07 : 0.15;
       if (!this.__oscStarted) {
         try { this.osc.start(0); } catch {}
@@ -1335,6 +1720,11 @@
     v.__stopNow = function () {
       this.playing = false;
       this.osc.volume.value = -Infinity;
+      if (this.__isStarWave) {
+        (this.__starLayers || []).forEach(layer => {
+          try { layer.osc.volume.value = -Infinity; } catch {}
+        });
+      }
       this.stretchNode.set({ in: 0, k: 0.4, damping: 0.67 });
       this.mouthOpenNode.set({ in: 0 });
       this.debounceBlink();
@@ -1348,6 +1738,12 @@
       try { this.osc.frequency.cancelScheduledValues?.(w.Tone.now()); } catch {}
       this.stretchNode.signals.in.value = stretchTarget;
       this.osc.frequency.value = freq;
+      if (this.__isStarWave) {
+        installStarVoice(this);
+        (this.__starLayers || []).forEach(layer => {
+          try { layer.osc.frequency.value = freq * layer.ratio; } catch {}
+        });
+      }
       updateLabel(this);
     };
   }
@@ -1395,6 +1791,7 @@
     </div>
     <div id="resize-grip" title="Resize" style="position:absolute;right:0;bottom:0;width:20px;height:20px;cursor:nwse-resize;background:linear-gradient(135deg,transparent 0 45%,#222 46% 55%,transparent 56% 63%,#222 64% 73%,transparent 74%);opacity:.7"></div>`;
   document.body.appendChild(panel);
+  syncCharacterToggleList();
 
   const status = panel.querySelector("#status");
   const characterToggles = [...panel.querySelectorAll("[data-osc-character]")];
