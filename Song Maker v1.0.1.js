@@ -67,6 +67,7 @@
     extraLowGraphics: false,
     lowBeforeExtraLow: false,
     darkMode: false,
+    noteLabels: true,
     undoStack: [],
     redoStack: [],
     restoring: false,
@@ -396,6 +397,28 @@
       } catch (_) {}
     }
     return null;
+  }
+
+  function noteLabel(note) {
+    const names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+    const midi = Math.max(0, Math.min(127, Math.round(Number(note) || 0)));
+    return `${names[midi % 12]}${Math.floor(midi / 12) - 1}`;
+  }
+
+  function setNoteLabels(enabled) {
+    state.noteLabels = !!enabled;
+    const button = document.getElementById("cml-note-labels");
+    if (button) {
+      button.textContent = state.noteLabels ? "Notes: On" : "Notes: Off";
+      button.classList.toggle("active", state.noteLabels);
+    }
+    window.dispatchEvent(new Event("resize"));
+    const status = document.getElementById("cml-mod-status");
+    if (status) status.textContent = state.noteLabels ? "Note names on." : "Note names off.";
+  }
+
+  function toggleNoteLabels() {
+    setNoteLabels(!state.noteLabels);
   }
 
   function eventCovering(time, note, activeOnly = false) {
@@ -2206,6 +2229,27 @@
       ctx.restore();
     }
 
+    function drawNoteText(ctx, event, rect, muted = false) {
+      if (!state.noteLabels) return;
+      if (!rect || state.extraLowGraphics) return;
+      const dpi = state.__longEditView.dpi || renderer.dpi || window.devicePixelRatio || 1;
+      const width = Math.max(1, rect.width - 2 * dpi);
+      const height = Math.max(1, rect.height - 2 * dpi);
+      if (width < 12 * dpi || height < 9 * dpi) return;
+      const label = noteLabel(event.note);
+      const fontSize = Math.max(6, Math.min(9, Math.floor(height / dpi * 0.48))) * dpi;
+      const x = rect.x + 3 * dpi;
+      const y = rect.y + height - 3 * dpi;
+      ctx.save();
+      ctx.globalAlpha = muted ? 0.28 : 0.52;
+      ctx.font = `700 ${fontSize}px Arial, sans-serif`;
+      ctx.textAlign = "left";
+      ctx.textBaseline = "alphabetic";
+      ctx.fillStyle = state.darkMode ? "#f8fafc" : "#111";
+      ctx.fillText(label, x, y, Math.max(8 * dpi, width - 5 * dpi));
+      ctx.restore();
+    }
+
     function drawAudioClipBlock(ctx, clip, previewRect = null) {
       const rect = previewRect || audioClipRect(clip);
       const dpi = state.__longEditView.dpi || renderer.dpi || window.devicePixelRatio || 1;
@@ -2281,6 +2325,7 @@
           if (!rect) return;
           const track = state.tracks.find((item) => item.id === (event.__cmlTrack || "track-1"));
           drawGhostRect(rendererInstance.context, rect, track?.color || "#111");
+          drawNoteText(rendererInstance.context, event, rect, true);
         });
       }
       const color = (currentTrack() && currentTrack().color) || "#16a8f0";
@@ -2288,12 +2333,21 @@
         activeEvents().forEach((event) => {
           if (eventDuration(event) <= 1) return;
           const rect = eventRect(event);
-          if (rect) drawRect(rendererInstance.context, rect, color, 0.72, true);
+          if (rect) {
+            drawRect(rendererInstance.context, rect, color, 0.72, true);
+          }
         });
       }
+      activeEvents().forEach((event) => {
+        const rect = eventRect(event);
+        if (rect) drawNoteText(rendererInstance.context, event, rect, isMutedEvent(event));
+      });
       if (state.__longNotePreview) {
         const rect = eventRect(state.__longNotePreview);
-        if (rect) drawRect(rendererInstance.context, rect, "#f4a806", state.lowGraphics ? 0.68 : 0.48, false);
+        if (rect) {
+          drawRect(rendererInstance.context, rect, "#f4a806", state.lowGraphics ? 0.68 : 0.48, false);
+          drawNoteText(rendererInstance.context, state.__longNotePreview, rect, false);
+        }
       }
       return false;
     }
@@ -3350,6 +3404,7 @@
     <div class="cml-section" data-cml-panel="perf">
       <div class="row">
         <button id="cml-dark-mode">Dark: Off</button>
+        <button id="cml-note-labels">Notes: On</button>
       </div>
       <div class="row cml-graphics-row">
         <button id="cml-low-graphics">Low: Off</button>
@@ -3473,6 +3528,7 @@
     event.target.value = "";
   };
   document.getElementById("cml-dark-mode").onclick = toggleDarkMode;
+  document.getElementById("cml-note-labels").onclick = toggleNoteLabels;
   document.getElementById("cml-low-graphics").onclick = toggleLowGraphicsMode;
   document.getElementById("cml-extra-low-graphics").onclick = toggleExtraLowGraphicsMode;
   document.getElementById("cml-audio-import").onclick = () => document.getElementById("cml-audio-file").click();
@@ -3535,7 +3591,7 @@
   };
   window.addEventListener("resize", window.__cmlDarkModeSurfaceHandler, true);
 
-  window[PATCH_MARK] = { sm, state, patchHeldPlayback, patchEnhancedDrumCanvas, patchSaveAndHistory, installLongNoteEditor, applySettings, unsmush, toggleHeldMode, toggleCleanMode, setCleanMode, toggleDarkMode, setDarkMode, patchDarkModeCanvas, toggleAllTrackMode, setAllTrackMode, toggleAllTracksInLow, setAllTracksInLow, toggleLowGraphicsMode, setLowGraphicsMode, toggleExtraLowGraphicsMode, setExtraLowGraphicsMode, cycleGlobalInstrument, updateGlobalInstrumentButton, importWebInstrumentUrl, patchGridAnimations, refreshInstrumentGrid, refreshPercussionGrid, addTrack, deleteTrack, resetCurrentClip, resetAll, undoModChange, redoModChange, exportJson, importJsonFile, importAudioClipFile, importCustomInstrumentFile, splitTracksByOctave };
+  window[PATCH_MARK] = { sm, state, patchHeldPlayback, patchEnhancedDrumCanvas, patchSaveAndHistory, installLongNoteEditor, applySettings, unsmush, toggleHeldMode, toggleCleanMode, setCleanMode, toggleDarkMode, setDarkMode, patchDarkModeCanvas, setNoteLabels, toggleNoteLabels, toggleAllTrackMode, setAllTrackMode, toggleAllTracksInLow, setAllTracksInLow, toggleLowGraphicsMode, setLowGraphicsMode, toggleExtraLowGraphicsMode, setExtraLowGraphicsMode, cycleGlobalInstrument, updateGlobalInstrumentButton, importWebInstrumentUrl, patchGridAnimations, refreshInstrumentGrid, refreshPercussionGrid, addTrack, deleteTrack, resetCurrentClip, resetAll, undoModChange, redoModChange, exportJson, importJsonFile, importAudioClipFile, importCustomInstrumentFile, splitTracksByOctave };
   patchHeldPlayback();
   patchEnhancedDrumPlayback();
   patchEnhancedDrumCanvas();
@@ -3549,6 +3605,7 @@
   updateGraphicsButtons();
   setAllTrackMode(state.allTrackMode);
   setAllTracksInLow(state.allTracksInLow);
+  setNoteLabels(state.noteLabels);
   ensureEventTracks();
   setCleanMode(false);
   renderTracks();
