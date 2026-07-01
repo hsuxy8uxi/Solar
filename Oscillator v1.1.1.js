@@ -251,6 +251,42 @@
     c.mouth.container.position.y += 8;
     c.container.position.y = c.container.height / 4;
     installStarVoice(c);
+    installCustomMouthWaves(c, "star");
+  }
+
+  function installCustomMouthWaves(c, kind) {
+    if (!c?.mouth?.open || !w.PIXI?.Graphics) return;
+    c.__customMouthKind = kind;
+    if (c.mouth.pattern) c.mouth.pattern.visible = false;
+    if (!c.mouth.__customWaveLayer) {
+      const wave = new w.PIXI.Graphics();
+      wave.alpha = 1;
+      c.mouth.open.addChild(wave);
+      c.mouth.__customWaveLayer = wave;
+    }
+    updateCustomMouthWaves(c);
+  }
+
+  function drawStarWavePattern(g, offset = 0) {
+    g.clear();
+    g.lineStyle(12, 0xffffff, 1);
+    for (let x = -520 + offset; x < 520; x += 96) {
+      g.moveTo(x + 0, 0);
+      g.lineTo(x + 36, 0);
+      g.lineTo(x + 48, -34);
+      g.lineTo(x + 60, 0);
+      g.lineTo(x + 96, 0);
+    }
+  }
+
+  function updateCustomMouthWaves(c) {
+    if (!c?.__customMouthKind || !c.mouth?.__customWaveLayer) return;
+    const period = c.__customMouthKind === "star" ? 96 : 150;
+    const tileX = Number(c.mouth.pattern?.tilePosition?.x);
+    const fallback = ((performance.now ? performance.now() : Date.now()) * 0.03);
+    const raw = Number.isFinite(tileX) ? tileX : fallback;
+    const offset = ((raw % period) + period) % period;
+    if (c.__customMouthKind === "star") drawStarWavePattern(c.mouth.__customWaveLayer, offset);
   }
 
   function installStarWave() {
@@ -1649,6 +1685,7 @@
             } catch {}
           });
         }
+        updateCustomMouthWaves(this);
       };
     }
     if (v.__isStarWave && !v.__polyManualStarAudioPatched) {
