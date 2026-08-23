@@ -69,6 +69,17 @@
 
   const sm = await exposeInternals();
   localStorage.removeItem("cml-song-maker-mod-dark-mode");
+
+  function ensureCmlFonts() {
+    if (!document.getElementById("cml-native-fonts")) {
+      const link = document.createElement("link");
+      link.id = "cml-native-fonts";
+      link.rel = "stylesheet";
+      link.href = "https://fonts.googleapis.com/css?family=Roboto:400,500,700";
+      document.head.appendChild(link);
+    }
+  }
+
   const state = {
     heldMode: false,
     baseRootNote: sm.options.rootNote,
@@ -92,6 +103,10 @@
     lowBeforeExtraLow: false,
     darkMode: false,
     noteLabels: true,
+    editSelectMode: false,
+    editPasteArmed: false,
+    editSelection: null,
+    editClipboard: [],
     undoStack: [],
     redoStack: [],
     restoring: false,
@@ -496,6 +511,55 @@
     reader.readAsText(file);
   }
 
+  function restoreModExtrasFromAutosave() {
+    const raw = localStorage.getItem("cml-song-maker-mod-autosave");
+    if (!raw) return false;
+    let snapshot = null;
+    try {
+      snapshot = JSON.parse(raw);
+    } catch (_) {
+      return false;
+    }
+    if (!snapshot || (!Array.isArray(snapshot.customInstruments) && !Array.isArray(snapshot.audioClips) && !Array.isArray(snapshot.tracks))) return false;
+    if (Array.isArray(snapshot.tracks) && snapshot.tracks.length) {
+      state.tracks = snapshot.tracks.map((track, index) => ({
+        id: track.id || `track-${index + 1}`,
+        name: track.name || `Track ${index + 1}`,
+        color: track.color || trackColors[index % trackColors.length],
+        muted: !!track.muted,
+        instrument: track.instrument || track.globalInstrumentId || "songmaker",
+        globalInstrumentId: track.globalInstrumentId || track.instrument || "songmaker",
+        customInstrumentId: track.customInstrumentId || null,
+      }));
+    }
+    state.activeTrackId = snapshot.activeTrackId || state.activeTrackId;
+    if (state.activeTrackId !== "__drums" && !state.tracks.some((track) => track.id === state.activeTrackId)) {
+      state.activeTrackId = state.tracks[0]?.id || "track-1";
+    }
+    state.selectedAudioClipId = snapshot.selectedAudioClipId || null;
+    state.globalInstrumentId = snapshot.globalInstrumentId || state.globalInstrumentId || "songmaker";
+    state.drumTrackMuted = !!snapshot.drumTrackMuted;
+    state.audioClips = Array.isArray(snapshot.audioClips) ? snapshot.audioClips.map((clip) => ({ ...clip })) : state.audioClips;
+    state.customInstruments = Array.isArray(snapshot.customInstruments) ? snapshot.customInstruments.map((instrument) => ({ ...instrument })) : state.customInstruments;
+    state.overlayNotes = Array.isArray(snapshot.overlayNotes) ? snapshot.overlayNotes.map((event) => ({ ...event, __cmlOverlay: true })) : state.overlayNotes;
+    if (snapshot.midi && Array.isArray(snapshot.midi.instrument)) {
+      const trackBuckets = new Map();
+      snapshot.midi.instrument.forEach((note) => {
+        const key = `${Math.round(Number(note.time) || 0)}|${Math.round(Number(note.note) || 0)}|${Math.max(1, Math.round(Number(note.duration) || 1))}`;
+        if (!trackBuckets.has(key)) trackBuckets.set(key, []);
+        trackBuckets.get(key).push(note.track || "track-1");
+      });
+      forEachInstrumentEvent((event) => {
+        const key = `${Math.round(Number(event.time) || 0)}|${Math.round(Number(event.note) || 0)}|${Math.max(1, Math.round(Number(event.duration) || 1))}`;
+        const bucket = trackBuckets.get(key);
+        if (bucket && bucket.length) event.__cmlTrack = bucket.shift();
+      });
+    }
+    decodeStoredAudioAssets();
+    rebuildOverlayNotePart();
+    return true;
+  }
+
   function ensureEventTracks() {
     state.tracks.forEach((track) => {
       if (!track.instrument) track.instrument = "songmaker";
@@ -744,6 +808,231 @@
     if (!grid) return;
     grid.notes.reset(grid.notes.cols, grid.notes.rows);
     grid.syncWithMidiTrack();
+  }
+
+  function editButton(id) {
+    return document.getElementById(id);
+  }
+
+  function setEditSelectMode(enabled) {
+    state.editSelectMode = !!enabled;
+    if (state.editSelectMode) state.editPasteArmed = false;
+    const select = editButton("cml-edit-select");
+    const paste = editButton("cml-edit-paste");
+    if (select) {
+      select.textContent = state.editSelectMode ? "Select: On" : "Select";
+      select.classList.toggle("active", state.editSelectMode);
+    }
+    if (paste) paste.classList.toggle("active", state.editPasteArmed);
+    const status = editButton("cml-mod-status");
+    if (status) status.textContent = state.editSelectMode ? "Drag on the grid to select notes." : "Select mode off.";
+  }
+
+  function toggleEditSelectMode() {
+    setEditSelectMode(!state.editSelectMode);
+  }
+
+  function setEditPasteArmed(enabled) {
+    state.editPasteArmed = !!enabled;
+    if (state.editPasteArmed) state.editSelectMode = false;
+    const select = editButton("cml-edit-select");
+    const paste = editButton("cml-edit-paste");
+    if (select) {
+      select.textContent = "Select";
+      select.classList.toggle("active", false);
+    }
+    if (paste) {
+      paste.textContent = state.editPasteArmed ? "Paste: Pick Cell" : "Paste";
+      paste.classList.toggle("active", state.editPasteArmed);
+    }
+    const status = editButton("cml-mod-status");
+    if (status) status.textContent = state.editPasteArmed ? "Click a grid cell to paste copied notes." : "Paste canceled.";
+  }
+
+  function updateEditButtons() {
+    const copy = editButton("cml-edit-copy");
+    const paste = editButton("cml-edit-paste");
+    const del = editButton("cml-edit-delete");
+    const transposeUp = editButton("cml-edit-transpose-up");
+    const transposeDown = editButton("cml-edit-transpose-down");
+    const hasSelection = !!state.editSelection && !!state.editSelection.events && !!state.editSelection.events.length;
+    if (copy) copy.disabled = !state.editSelection || !state.editSelection.events.length;
+    if (paste) paste.disabled = !state.editClipboard.length;
+    if (del) del.disabled = !hasSelection;
+    if (transposeUp) transposeUp.disabled = !hasSelection;
+    if (transposeDown) transposeDown.disabled = !hasSelection;
+    window.dispatchEvent(new Event("resize"));
+  }
+
+  function isEditSelectedEvent(event) {
+    const events = state.editSelection && state.editSelection.events;
+    return !!events && events.includes(event);
+  }
+
+  function gridViewInfo() {
+    const grid = sm.grid.instrument;
+    const renderer = grid && grid.renderer;
+    const canvas = renderer && renderer.canvas;
+    if (!grid || !renderer || !canvas) return null;
+    const view = state.__longEditView || {};
+    const dpi = view.dpi || renderer.dpi || window.devicePixelRatio || 1;
+    return {
+      grid,
+      renderer,
+      canvas,
+      dpi,
+      tileWidth: view.tileWidth || renderer.tileWidth || 24,
+      tileHeight: view.tileHeight || renderer.tileHeight || 18,
+      scrollX: ((view.scroll && view.scroll.x) || 0) * dpi,
+      scrollY: ((view.scroll && view.scroll.y) || 0) * dpi,
+    };
+  }
+
+  function screenRowToGridRow(grid, screenRow) {
+    const bounded = Math.max(0, Math.min(grid.notes.rows - 1, Math.floor(screenRow)));
+    if (grid.notes.flipY) {
+      for (let row = 0; row < grid.notes.rows; row++) {
+        if (grid.notes.flipY(row) === bounded) return row;
+      }
+    }
+    return grid.notes.rows - bounded - 1;
+  }
+
+  function editPointFromEvent(event) {
+    const view = gridViewInfo();
+    if (!view) return null;
+    const rect = view.canvas.getBoundingClientRect();
+    const x = (event.clientX - rect.left) * view.dpi;
+    const y = (event.clientY - rect.top) * view.dpi;
+    const time = Math.max(0, Math.floor((x + view.scrollX) / (view.tileWidth * view.dpi)));
+    const screenRow = Math.floor((y + view.scrollY) / (view.tileHeight * view.dpi));
+    const row = screenRowToGridRow(view.grid, screenRow);
+    return { ...view, x, y, time, row, note: view.grid.indexToPitch(row) };
+  }
+
+  function eventsInEditBox(start, end) {
+    if (!start || !end) return [];
+    const minTime = Math.min(start.time, end.time);
+    const maxTime = Math.max(start.time, end.time);
+    const minRow = Math.min(start.row, end.row);
+    const maxRow = Math.max(start.row, end.row);
+    const events = [];
+    const scan = (event) => {
+      if (!isActiveEvent(event)) return;
+      const row = rowForNote(start.grid, event.note);
+      if (row === null || row === undefined || row < minRow || row > maxRow) return;
+      const eventStart = Math.max(0, Math.round(event.time));
+      const eventEnd = eventStart + Math.max(1, Math.round(Number(event.duration) || 1)) - 1;
+      if (eventEnd < minTime || eventStart > maxTime) return;
+      events.push(event);
+    };
+    forEachInstrumentEvent(scan);
+    forEachOverlayNote(scan);
+    return events.sort((a, b) => a.time - b.time || a.note - b.note);
+  }
+
+  function copyEditSelection() {
+    const selected = state.editSelection && state.editSelection.events ? state.editSelection.events : [];
+    if (!selected.length) return "Nothing selected.";
+    const minTime = Math.min(...selected.map((event) => Math.max(0, Math.round(event.time))));
+    state.editClipboard = selected.map((event) => ({
+      time: Math.max(0, Math.round(event.time)) - minTime,
+      note: event.note,
+      duration: Math.max(1, Math.round(Number(event.duration) || 1)),
+    }));
+    updateEditButtons();
+    return `Copied ${state.editClipboard.length} note${state.editClipboard.length === 1 ? "" : "s"}.`;
+  }
+
+  function deleteEditSelection() {
+    const selected = state.editSelection && state.editSelection.events ? [...state.editSelection.events] : [];
+    if (!selected.length) return "Nothing selected.";
+    let removed = 0;
+    selected.forEach((event) => {
+      if (removeInstrumentEvent(event)) removed++;
+    });
+    state.editSelection = null;
+    sm.player.syncWithMidiTrack();
+    refreshInstrumentGrid();
+    renderTracks();
+    updateEditButtons();
+    sm.changed();
+    return `Deleted ${removed} selected note${removed === 1 ? "" : "s"}.`;
+  }
+
+  function transposeEditSelection(steps) {
+    const selected = state.editSelection && state.editSelection.events ? [...state.editSelection.events] : [];
+    if (!selected.length) return "Nothing selected.";
+    const grid = sm.grid.instrument;
+    if (!grid || !grid.notes) throw new Error("Instrument grid is not ready.");
+    const delta = Math.round(Number(steps) || 0);
+    if (!delta) return "Transpose amount was zero.";
+    const moved = [];
+    selected.forEach((event) => {
+      const row = rowForNote(grid, event.note);
+      if (row === null || row === undefined) throw new Error(`Selected note ${noteLabel(event.note)} is outside the current grid.`);
+      const nextRow = row + delta;
+      if (nextRow < 0 || nextRow >= grid.notes.rows) throw new Error("Transpose would move a selected note outside the grid.");
+      moved.push({
+        original: event,
+        time: Math.max(0, Math.round(event.time)),
+        note: grid.indexToPitch(nextRow),
+        duration: Math.max(1, Math.round(Number(event.duration) || 1)),
+        trackId: event.__cmlTrack || activeTrackId(),
+        overlay: !!event.__cmlOverlay,
+      });
+    });
+    selected.forEach((event) => removeInstrumentEvent(event));
+    const nextSelection = [];
+    moved.forEach((item) => {
+      if (item.overlay) {
+        const event = { time: item.time, note: item.note, duration: item.duration, __cmlTrack: item.trackId, __cmlOverlay: true };
+        state.overlayNotes.push(event);
+        nextSelection.push(event);
+        return;
+      }
+      const event = sm.midi.instrument.add(item.time, item.note, item.duration, false);
+      if (event) {
+        event.__cmlTrack = item.trackId;
+        nextSelection.push(event);
+      }
+    });
+    rebuildOverlayNotePart();
+    sm.player.syncWithMidiTrack();
+    refreshInstrumentGrid();
+    renderTracks();
+    state.editSelection = nextSelection.length
+      ? { startTime: Math.min(...nextSelection.map((event) => event.time)), events: nextSelection }
+      : null;
+    updateEditButtons();
+    sm.changed();
+    return `Transposed ${nextSelection.length} selected note${nextSelection.length === 1 ? "" : "s"} ${delta > 0 ? "up" : "down"}.`;
+  }
+
+  function pasteEditClipboard(targetTime, targetNote) {
+    if (!state.editClipboard.length) return "Clipboard is empty.";
+    const baseNote = state.editClipboard[0].note;
+    const deltaNote = targetNote - baseNote;
+    const trackId = currentTrack().id;
+    let pasted = 0;
+    state.editClipboard.forEach((item) => {
+      const time = Math.max(0, targetTime + item.time);
+      const note = item.note + deltaNote;
+      const existing = eventCovering(time, note, true);
+      if (existing) removeInstrumentEvent(existing);
+      const event = sm.midi.instrument.add(time, note, item.duration, false);
+      if (event) {
+        event.__cmlTrack = trackId;
+        pasted++;
+      }
+    });
+    sm.player.syncWithMidiTrack();
+    refreshInstrumentGrid();
+    renderTracks();
+    state.editSelection = null;
+    updateEditButtons();
+    sm.changed();
+    return `Pasted ${pasted} note${pasted === 1 ? "" : "s"}.`;
   }
 
   function instrumentPitchRange() {
@@ -1369,6 +1658,220 @@
     return await ctx.decodeAudioData(copy);
   }
 
+  function textDecoderAscii(bytes, offset, length) {
+    let text = "";
+    for (let i = 0; i < length; i++) {
+      const code = bytes[offset + i];
+      if (!code) break;
+      text += String.fromCharCode(code);
+    }
+    return text.trim();
+  }
+
+  function soundFontChunks(dataUrl) {
+    const bytes = new Uint8Array(dataUrlToArrayBuffer(dataUrl));
+    const view = new DataView(bytes.buffer);
+    const fourcc = (offset) => String.fromCharCode(bytes[offset], bytes[offset + 1], bytes[offset + 2], bytes[offset + 3]);
+    if (fourcc(0) !== "RIFF" || fourcc(8) !== "sfbk") throw new Error("That file is not an SF2 SoundFont.");
+    const chunks = {};
+    for (let offset = 12; offset + 8 <= bytes.length;) {
+      const id = fourcc(offset);
+      const size = view.getUint32(offset + 4, true);
+      const start = offset + 8;
+      if (id === "LIST") {
+        const type = fourcc(start);
+        let inner = start + 4;
+        const end = start + size;
+        while (inner + 8 <= end) {
+          const chunkId = fourcc(inner);
+          const chunkSize = view.getUint32(inner + 4, true);
+          chunks[`${type}:${chunkId}`] = { offset: inner + 8, size: chunkSize };
+          inner += 8 + chunkSize + (chunkSize & 1);
+        }
+      }
+      offset += 8 + size + (size & 1);
+    }
+    const requireChunk = (key) => {
+      if (!chunks[key]) throw new Error(`SoundFont is missing ${key}.`);
+      return chunks[key];
+    };
+    const readRecords = (key, size, read) => {
+      const chunk = requireChunk(key);
+      const records = [];
+      for (let offset = chunk.offset; offset + size <= chunk.offset + chunk.size; offset += size) records.push(read(offset));
+      return records;
+    };
+    return { bytes, view, requireChunk, readRecords };
+  }
+
+  function listSoundFontPresets(dataUrl) {
+    const { bytes, view, readRecords } = soundFontChunks(dataUrl);
+    const phdr = readRecords("pdta:phdr", 38, (o) => ({
+      name: textDecoderAscii(bytes, o, 20),
+      preset: view.getUint16(o + 20, true),
+      bank: view.getUint16(o + 22, true),
+    }));
+    return phdr.slice(0, -1).filter((preset) => preset.name && preset.name !== "EOP");
+  }
+
+  function chooseSoundFontPreset(presets, fileName) {
+    return new Promise((resolve) => {
+      document.getElementById("cml-sf2-picker")?.remove();
+      const overlay = document.createElement("div");
+      overlay.id = "cml-sf2-picker";
+      const dialog = document.createElement("div");
+      dialog.className = "cml-sf2-dialog";
+      const title = document.createElement("h3");
+      title.textContent = "Choose SoundFont Preset";
+      const subtitle = document.createElement("div");
+      subtitle.className = "cml-sf2-subtitle";
+      subtitle.textContent = `${fileName || "SoundFont"} - ${presets.length} preset${presets.length === 1 ? "" : "s"}`;
+      const list = document.createElement("div");
+      list.className = "cml-sf2-list";
+      let selected = 0;
+      const buttons = presets.map((preset, index) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "cml-sf2-preset";
+        button.textContent = `${String(index + 1).padStart(2, "0")}  ${preset.name}  (bank ${preset.bank}, preset ${preset.preset})`;
+        button.onclick = () => {
+          selected = index;
+          buttons.forEach((item) => item.classList.toggle("active", item === button));
+        };
+        button.ondblclick = () => {
+          overlay.remove();
+          resolve(index);
+        };
+        list.appendChild(button);
+        return button;
+      });
+      if (buttons[0]) buttons[0].classList.add("active");
+      const actions = document.createElement("div");
+      actions.className = "cml-sf2-actions";
+      const cancel = document.createElement("button");
+      cancel.type = "button";
+      cancel.textContent = "Cancel";
+      cancel.onclick = () => {
+        overlay.remove();
+        resolve(null);
+      };
+      const use = document.createElement("button");
+      use.type = "button";
+      use.textContent = "Use Preset";
+      use.className = "primary";
+      use.onclick = () => {
+        overlay.remove();
+        resolve(selected);
+      };
+      actions.append(cancel, use);
+      dialog.append(title, subtitle, list, actions);
+      overlay.appendChild(dialog);
+      document.body.appendChild(overlay);
+    });
+  }
+
+  function parseSoundFont(dataUrl, name = "SoundFont", preferredPreset = null) {
+    const { bytes, view, requireChunk, readRecords } = soundFontChunks(dataUrl);
+    const phdr = readRecords("pdta:phdr", 38, (o) => ({
+      name: textDecoderAscii(bytes, o, 20),
+      preset: view.getUint16(o + 20, true),
+      bank: view.getUint16(o + 22, true),
+      bagIndex: view.getUint16(o + 24, true),
+    }));
+    const pbag = readRecords("pdta:pbag", 4, (o) => ({ genIndex: view.getUint16(o, true) }));
+    const pgen = readRecords("pdta:pgen", 4, (o) => ({ oper: view.getUint16(o, true), amount: view.getInt16(o + 2, true), raw: view.getUint16(o + 2, true), lo: bytes[o + 2], hi: bytes[o + 3] }));
+    const inst = readRecords("pdta:inst", 22, (o) => ({ name: textDecoderAscii(bytes, o, 20), bagIndex: view.getUint16(o + 20, true) }));
+    const ibag = readRecords("pdta:ibag", 4, (o) => ({ genIndex: view.getUint16(o, true) }));
+    const igen = readRecords("pdta:igen", 4, (o) => ({ oper: view.getUint16(o, true), amount: view.getInt16(o + 2, true), raw: view.getUint16(o + 2, true), lo: bytes[o + 2], hi: bytes[o + 3] }));
+    const shdr = readRecords("pdta:shdr", 46, (o) => ({
+      name: textDecoderAscii(bytes, o, 20),
+      start: view.getUint32(o + 20, true),
+      end: view.getUint32(o + 24, true),
+      startLoop: view.getUint32(o + 28, true),
+      endLoop: view.getUint32(o + 32, true),
+      sampleRate: view.getUint32(o + 36, true) || 44100,
+      originalPitch: bytes[o + 40] || 60,
+      pitchCorrection: view.getInt8(o + 41),
+    }));
+    const smpl = requireChunk("sdta:smpl");
+    const presetChoices = phdr.slice(0, -1).filter((preset) => preset.name && preset.name !== "EOP");
+    if (!presetChoices.length) throw new Error("No playable presets found in this SoundFont.");
+    let choice = 0;
+    if (preferredPreset !== null && preferredPreset !== undefined) {
+      if (typeof preferredPreset === "number") choice = Math.max(0, Math.min(presetChoices.length - 1, Math.round(preferredPreset)));
+      else choice = Math.max(0, presetChoices.findIndex((preset) => preset.name === preferredPreset));
+    }
+    const preset = presetChoices[choice];
+    const presetIndex = phdr.indexOf(preset);
+    const gensFor = (gens, start, end) => gens.slice(start, end);
+    const genValue = (gens, oper) => [...gens].reverse().find((gen) => gen.oper === oper);
+    const rangeFrom = (gens, oper, fallback = [0, 127]) => {
+      const gen = genValue(gens, oper);
+      return gen ? [gen.lo, gen.hi] : fallback;
+    };
+    const offsetFrom = (gens, fineOper, coarseOper = null) => {
+      const fine = genValue(gens, fineOper);
+      const coarse = coarseOper === null ? null : genValue(gens, coarseOper);
+      return (fine ? fine.amount : 0) + (coarse ? coarse.amount * 32768 : 0);
+    };
+    const pzones = [];
+    for (let i = phdr[presetIndex].bagIndex; i < phdr[presetIndex + 1].bagIndex; i++) {
+      pzones.push(gensFor(pgen, pbag[i].genIndex, pbag[i + 1].genIndex));
+    }
+    const globalPresetGens = pzones.find((gens) => !genValue(gens, 41)) || [];
+    const regions = [];
+    pzones.forEach((presetGens) => {
+      const instrumentGen = genValue(presetGens, 41);
+      if (!instrumentGen || !inst[instrumentGen.raw]) return;
+      const instrument = inst[instrumentGen.raw];
+      const izones = [];
+      for (let i = instrument.bagIndex; i < inst[instrumentGen.raw + 1].bagIndex; i++) {
+        izones.push(gensFor(igen, ibag[i].genIndex, ibag[i + 1].genIndex));
+      }
+      const globalInstrumentGens = izones.find((gens) => !genValue(gens, 53)) || [];
+      izones.forEach((instrumentGens) => {
+        const sampleGen = genValue(instrumentGens, 53);
+        if (!sampleGen || !shdr[sampleGen.raw]) return;
+        const sample = shdr[sampleGen.raw];
+        if (!sample.name || sample.name === "EOS") return;
+        const gens = [...globalPresetGens, ...presetGens, ...globalInstrumentGens, ...instrumentGens];
+        const keyRange = rangeFrom(gens, 43);
+        const start = sample.start + offsetFrom(gens, 0, 4);
+        const end = sample.end + offsetFrom(gens, 1, 12);
+        const startLoop = sample.startLoop + offsetFrom(gens, 2, 45);
+        const endLoop = sample.endLoop + offsetFrom(gens, 3, 50);
+        const rootGen = genValue(gens, 58);
+        const rootNote = rootGen && rootGen.raw < 128 ? rootGen.raw : sample.originalPitch;
+        const coarse = genValue(gens, 51);
+        const fine = genValue(gens, 52);
+        regions.push({
+          keyLow: Math.max(0, Math.min(127, keyRange[0])),
+          keyHigh: Math.max(0, Math.min(127, keyRange[1])),
+          sampleStart: Math.max(0, start),
+          sampleEnd: Math.max(start + 1, end),
+          loopStart: Math.max(start, startLoop),
+          loopEnd: Math.max(startLoop + 1, endLoop),
+          sampleRate: sample.sampleRate,
+          rootNote: Math.max(0, Math.min(127, rootNote)),
+          tuneCents: (coarse ? coarse.amount * 100 : 0) + (fine ? fine.amount : 0) + (sample.pitchCorrection || 0),
+          loop: !!(genValue(gens, 54) && (genValue(gens, 54).raw & 1)),
+          name: sample.name,
+        });
+      });
+    });
+    if (!regions.length) throw new Error("No sample regions found in that SoundFont preset.");
+    const sampleCount = Math.max(...regions.map((region) => region.sampleEnd));
+    const ctx = drumContext();
+    const buffer = ctx.createBuffer(1, sampleCount, shdr.find((sample) => sample.sampleRate)?.sampleRate || 44100);
+    const channel = buffer.getChannelData(0);
+    const smplStart = smpl.offset;
+    for (let i = 0; i < sampleCount && smplStart + i * 2 + 1 < bytes.length; i++) {
+      channel[i] = Math.max(-1, Math.min(1, view.getInt16(smplStart + i * 2, true) / 32768));
+    }
+    regions.sort((a, b) => (a.keyHigh - a.keyLow) - (b.keyHigh - b.keyLow));
+    return { name: `${name} - ${preset.name}`, preset: preset.name, buffer, regions };
+  }
+
   function trackAudioNode(node) {
     state.audioNodes.push(node);
     setTimeout(() => {
@@ -1395,6 +1898,18 @@
       }).catch(console.warn);
     });
     state.customInstruments.forEach((instrument) => {
+      if (instrument.kind === "soundfont" && !instrument.buffer && instrument.dataUrl) {
+        try {
+          const parsed = parseSoundFont(instrument.dataUrl, instrument.fileName || instrument.name || "SoundFont", instrument.preset || null);
+          instrument.buffer = parsed.buffer;
+          instrument.regions = parsed.regions;
+          instrument.preset = parsed.preset;
+          instrument.name = instrument.name || parsed.name;
+        } catch (err) {
+          console.warn(err);
+        }
+        return;
+      }
       if (!instrument.buffer && instrument.dataUrl) decodeAudioDataUrl(instrument.dataUrl).then((buffer) => {
         instrument.buffer = buffer;
       }).catch(console.warn);
@@ -1416,6 +1931,37 @@
     else source.start(when, safeOffset);
     trackAudioNode(source);
     return source;
+  }
+
+  function playSoundFontNote(instrument, event, duration, when, velocity = 1) {
+    if (!instrument || !instrument.buffer || !Array.isArray(instrument.regions)) return false;
+    const note = Math.max(0, Math.min(127, Math.round(event.note)));
+    const region = instrument.regions.find((item) => note >= item.keyLow && note <= item.keyHigh);
+    if (!region) return false;
+    const ctx = drumContext();
+    const source = ctx.createBufferSource();
+    const gain = ctx.createGain();
+    source.buffer = instrument.buffer;
+    const cents = (note - region.rootNote) * 100 + (region.tuneCents || 0);
+    const rate = Math.pow(2, cents / 1200) * ((region.sampleRate || instrument.buffer.sampleRate) / instrument.buffer.sampleRate);
+    source.playbackRate.setValueAtTime(rate, when);
+    gain.gain.setValueAtTime(Math.max(0.05, Math.min(1, velocity || 0.8)), when);
+    gain.gain.setTargetAtTime(0, when + Math.max(0.03, duration), 0.08);
+    source.connect(gain).connect(ctx.destination);
+    const start = Math.max(0, region.sampleStart / instrument.buffer.sampleRate);
+    const end = Math.max(start + 0.02, region.sampleEnd / instrument.buffer.sampleRate);
+    const sampleDuration = end - start;
+    if (region.loop && region.loopEnd > region.loopStart) {
+      source.loop = true;
+      source.loopStart = region.loopStart / instrument.buffer.sampleRate;
+      source.loopEnd = region.loopEnd / instrument.buffer.sampleRate;
+      source.start(when, start);
+      source.stop(when + Math.max(0.04, duration + 0.12));
+    } else {
+      source.start(when, start, Math.min(sampleDuration, Math.max(0.04, duration + 0.12) * rate));
+    }
+    trackAudioNode(source);
+    return true;
   }
 
   function midiFrequency(note) {
@@ -1585,6 +2131,9 @@
     const instrument = track && track.customInstrumentId
       ? state.customInstruments.find((item) => item.id === track.customInstrumentId)
       : null;
+    if (instrument && instrument.kind === "soundfont") {
+      return playSoundFontNote(instrument, event, duration, when, velocity);
+    }
     if (instrument && instrument.buffer) {
       const rate = Math.pow(2, (event.note - (instrument.rootNote || 60)) / 12);
       playBuffer(instrument.buffer, when, 0, duration * rate, rate, Math.max(0.15, Math.min(1, velocity || 0.8)));
@@ -1619,7 +2168,8 @@
         (clip.offsetSeconds || 0) + localOffset,
         Math.max(0.02, clipLength - localOffset),
         1,
-        clip.gain || 0.9
+        clip.gain || 0.9,
+        clip.trackId || "track-1"
       );
     });
   }
@@ -1667,6 +2217,33 @@
     track.instrument = "songmaker";
     sm.changed();
     return `${track.name} now uses custom instrument ${instrument.name}.`;
+  }
+
+  async function importSoundFontFile(file) {
+    const track = currentTrack();
+    if (!track || state.activeTrackId === "__drums") throw new Error("Select a melody clip before importing a SoundFont.");
+    const dataUrl = await fileToDataUrl(file);
+    const presets = listSoundFontPresets(dataUrl);
+    if (!presets.length) throw new Error("No playable presets found in this SoundFont.");
+    const presetIndex = presets.length > 1 ? await chooseSoundFontPreset(presets, file.name || "SoundFont") : 0;
+    if (presetIndex === null) return "SoundFont import cancelled.";
+    const parsed = parseSoundFont(dataUrl, file.name || "SoundFont", presetIndex);
+    const instrument = {
+      id: `sf2-${Date.now()}`,
+      kind: "soundfont",
+      name: parsed.name,
+      fileName: file.name || "SoundFont",
+      preset: parsed.preset,
+      dataUrl,
+      regions: parsed.regions,
+      buffer: parsed.buffer,
+    };
+    state.customInstruments.push(instrument);
+    track.customInstrumentId = instrument.id;
+    track.globalInstrumentId = "songmaker";
+    track.instrument = "songmaker";
+    sm.changed();
+    return `${track.name} now uses SoundFont ${instrument.name}.`;
   }
 
   async function importWebInstrumentUrl() {
@@ -2808,6 +3385,26 @@
       ctx.restore();
     }
 
+    function drawSelectionOutline(ctx, rect) {
+      if (!rect) return;
+      const dpi = state.__longEditView.dpi || renderer.dpi || window.devicePixelRatio || 1;
+      const x = rect.x + 0.5 * dpi;
+      const y = rect.y + 0.5 * dpi;
+      const width = Math.max(1, rect.width - dpi);
+      const height = Math.max(1, rect.height - dpi);
+      ctx.save();
+      ctx.globalAlpha = 0.98;
+      ctx.strokeStyle = "#f4a806";
+      ctx.lineWidth = Math.max(2, 2 * dpi);
+      ctx.setLineDash([4 * dpi, 3 * dpi]);
+      ctx.strokeRect(x, y, width, height);
+      ctx.setLineDash([]);
+      ctx.strokeStyle = "rgba(255,255,255,0.92)";
+      ctx.lineWidth = Math.max(1, dpi);
+      ctx.strokeRect(x + dpi, y + dpi, Math.max(1, width - 2 * dpi), Math.max(1, height - 2 * dpi));
+      ctx.restore();
+    }
+
     function drawNoteText(ctx, event, rect, muted = false) {
       if (!state.noteLabels) return;
       if (!rect || state.extraLowGraphics) return;
@@ -2935,6 +3532,13 @@
         const rect = eventRect(event);
         if (rect) drawNoteText(rendererInstance.context, event, rect, isMutedEvent(event));
       });
+      if (state.editSelection && state.editSelection.events && state.editSelection.events.length) {
+        visibleActive.forEach((event) => {
+          if (!isEditSelectedEvent(event)) return;
+          const rect = eventRect(event);
+          if (rect) drawSelectionOutline(rendererInstance.context, rect);
+        });
+      }
       if (state.__longNotePreview) {
         const rect = eventRect(state.__longNotePreview);
         if (rect) {
@@ -3132,6 +3736,73 @@
     window.addEventListener("mouseup", endDrag, true);
     window.addEventListener("blur", cancelDrag, true);
     renderer.canvas.addEventListener("dblclick", deleteOnDoubleClick, true);
+  }
+
+  function installEditSelectionTools() {
+    const view = gridViewInfo();
+    if (!view || view.canvas.__cmlEditSelectionInstalled) return;
+    const overlay = document.createElement("div");
+    overlay.id = "cml-edit-selection-box";
+    overlay.style.display = "none";
+    document.body.appendChild(overlay);
+
+    const drawBox = (startPoint, endPoint) => {
+      const rect = view.canvas.getBoundingClientRect();
+      const left = Math.min(startPoint.x, endPoint.x) / startPoint.dpi + rect.left;
+      const top = Math.min(startPoint.y, endPoint.y) / startPoint.dpi + rect.top;
+      const width = Math.abs(endPoint.x - startPoint.x) / startPoint.dpi;
+      const height = Math.abs(endPoint.y - startPoint.y) / startPoint.dpi;
+      overlay.style.left = `${left}px`;
+      overlay.style.top = `${top}px`;
+      overlay.style.width = `${Math.max(4, width)}px`;
+      overlay.style.height = `${Math.max(4, height)}px`;
+      overlay.style.display = "block";
+    };
+
+    view.canvas.addEventListener("mousedown", (event) => {
+      if (state.activeTrackId === "__drums") return;
+      if (!state.editSelectMode && !state.editPasteArmed) return;
+      const start = editPointFromEvent(event);
+      if (!start) return;
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation?.();
+
+      if (state.editPasteArmed) {
+        const status = editButton("cml-mod-status");
+        try {
+          if (status) status.textContent = pasteEditClipboard(start.time, start.note);
+        } catch (err) {
+          if (status) status.textContent = err.message || String(err);
+          console.error(err);
+        }
+        setEditPasteArmed(false);
+        return;
+      }
+
+      let latest = start;
+      drawBox(start, latest);
+      const move = (moveEvent) => {
+        const point = editPointFromEvent(moveEvent);
+        if (!point) return;
+        latest = point;
+        drawBox(start, latest);
+      };
+      const up = (upEvent) => {
+        window.removeEventListener("mousemove", move, true);
+        window.removeEventListener("mouseup", up, true);
+        const end = editPointFromEvent(upEvent) || latest;
+        overlay.style.display = "none";
+        const events = eventsInEditBox(start, end);
+        state.editSelection = { startTime: Math.min(start.time, end.time), events };
+        updateEditButtons();
+        const status = editButton("cml-mod-status");
+        if (status) status.textContent = `Selected ${events.length} note${events.length === 1 ? "" : "s"}.`;
+      };
+      window.addEventListener("mousemove", move, true);
+      window.addEventListener("mouseup", up, true);
+    }, true);
+    view.canvas.__cmlEditSelectionInstalled = true;
   }
 
   function numberValue(id, fallback) {
@@ -3433,7 +4104,7 @@
       z-index: 2147483647;
       top: 14px;
       right: 14px;
-      width: 250px;
+      width: 290px;
       padding: 12px;
       background: #111;
       color: #fff;
@@ -3490,8 +4161,8 @@
       display: grid;
       gap: 6px;
       margin-top: 10px;
-      max-height: 210px;
-      overflow: auto;
+      max-height: none;
+      overflow: visible;
     }
     #cml-floating-track-list {
       display: none;
@@ -3694,7 +4365,7 @@
       align-items: center;
       pointer-events: auto;
       font: 9px/1.1 Arial, sans-serif;
-      max-width: calc(100vw - 520px);
+        max-width: calc(100vw - 560px);
       overflow: visible;
     }
     #cml-top-tools button {
@@ -3715,7 +4386,7 @@
     }
     #cml-mod-menu .cml-section-tabs {
       display: grid;
-      grid-template-columns: repeat(5, minmax(0, 1fr));
+      grid-template-columns: repeat(6, minmax(0, 1fr));
       gap: 4px;
       margin: 7px 0 8px;
     }
@@ -3734,6 +4405,88 @@
     }
     #cml-mod-menu .cml-section.active {
       display: block;
+    }
+    #cml-mod-menu [data-cml-panel="import"] button,
+    #cml-mod-menu [data-cml-panel="import"] button:not(.active) {
+      background: #16a8f0;
+      color: #fff;
+    }
+    #cml-edit-selection-box {
+      position: fixed;
+      z-index: 9998;
+      pointer-events: none;
+      border: 2px solid #f4a806;
+      background: rgba(244,168,6,0.18);
+      border-radius: 4px;
+      box-shadow: 0 0 0 1px rgba(0,0,0,0.25);
+    }
+    #cml-sf2-picker {
+      position: fixed;
+      inset: 0;
+      z-index: 2147483647;
+      display: grid;
+      place-items: center;
+      padding: 18px;
+      background: rgba(0,0,0,0.46);
+      font: 13px/1.35 Arial, sans-serif;
+    }
+    #cml-sf2-picker .cml-sf2-dialog {
+      width: min(520px, calc(100vw - 36px));
+      max-height: min(620px, calc(100vh - 36px));
+      display: grid;
+      grid-template-rows: auto auto minmax(140px, 1fr) auto;
+      gap: 8px;
+      padding: 14px;
+      color: #fff;
+      background: #111;
+      border: 2px solid #16a8f0;
+      border-radius: 8px;
+      box-shadow: 0 16px 46px rgba(0,0,0,0.42);
+      box-sizing: border-box;
+    }
+    #cml-sf2-picker h3 {
+      margin: 0;
+      font-size: 16px;
+    }
+    #cml-sf2-picker .cml-sf2-subtitle {
+      color: rgba(255,255,255,0.72);
+      font-size: 12px;
+    }
+    #cml-sf2-picker .cml-sf2-list {
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      display: grid;
+      gap: 5px;
+      padding-right: 4px;
+    }
+    #cml-sf2-picker button {
+      cursor: pointer;
+      border: 0;
+      border-radius: 5px;
+      padding: 8px;
+      color: #fff;
+      background: #16a8f0;
+      font-weight: 700;
+    }
+    #cml-sf2-picker .cml-sf2-preset {
+      text-align: left;
+      white-space: normal;
+    }
+    #cml-sf2-picker .cml-sf2-preset.active {
+      background: #f4a806;
+      color: #111;
+    }
+    #cml-sf2-picker .cml-sf2-actions {
+      display: flex;
+      gap: 8px;
+      justify-content: flex-end;
+    }
+    #cml-sf2-picker .cml-sf2-actions button {
+      flex: 0 0 auto;
+      min-width: 100px;
+    }
+    #cml-sf2-picker .cml-sf2-actions .primary {
+      background: #16a8f0;
     }
     #cml-top-tools #cml-floating-track-list button {
       cursor: pointer;
@@ -3956,6 +4709,7 @@
       <button data-cml-section="clips">Clips</button>
       <button data-cml-section="import">Import</button>
       <button data-cml-section="drums">Drums</button>
+      <button data-cml-section="edit">Edit</button>
       <button data-cml-section="perf">Perf</button>
     </div>
     <div class="cml-section active" data-cml-panel="setup">
@@ -3989,10 +4743,26 @@
         <input id="cml-audio-file" type="file" accept="audio/*,.mp3,.wav,.ogg,.m4a" hidden>
         <input id="cml-custom-inst-file" type="file" accept="audio/*,.mp3,.wav,.ogg,.m4a" hidden>
       </div>
+      <div class="row">
+        <button id="cml-soundfont-import" title="Import an SF2 SoundFont for the selected melody clip.">Import SoundFont</button>
+        <input id="cml-soundfont-file" type="file" accept=".sf2,audio/x-soundfont" hidden>
+      </div>
       <div id="cml-audio-clip-list"></div>
     </div>
     <div class="cml-section" data-cml-panel="drums">
       <div id="cml-drum-legend">${drumLegend}</div>
+    </div>
+    <div class="cml-section" data-cml-panel="edit">
+      <div class="row">
+        <button id="cml-edit-select" title="Drag over the grid to select notes in the active clip.">Select</button>
+        <button id="cml-edit-copy" title="Copy the selected notes." disabled>Copy</button>
+        <button id="cml-edit-paste" title="Click Paste, then click a grid cell to place the copied notes." disabled>Paste</button>
+        <button id="cml-edit-delete" title="Delete the selected notes." disabled>Delete</button>
+      </div>
+      <div class="row">
+        <button id="cml-edit-transpose-up" title="Move selected notes one visible grid step up." disabled>Transpose Up</button>
+        <button id="cml-edit-transpose-down" title="Move selected notes one visible grid step down." disabled>Transpose Down</button>
+      </div>
     </div>
     <div class="cml-section" data-cml-panel="perf">
       <div class="row">
@@ -4122,6 +4892,47 @@
   };
   document.getElementById("cml-dark-mode").onclick = toggleDarkMode;
   document.getElementById("cml-note-labels").onclick = toggleNoteLabels;
+  document.getElementById("cml-edit-select").onclick = toggleEditSelectMode;
+  document.getElementById("cml-edit-copy").onclick = () => {
+    try {
+      status.textContent = copyEditSelection();
+    } catch (err) {
+      status.textContent = err.message || String(err);
+      console.error(err);
+    }
+  };
+  document.getElementById("cml-edit-paste").onclick = () => {
+    try {
+      setEditPasteArmed(!state.editPasteArmed);
+    } catch (err) {
+      status.textContent = err.message || String(err);
+      console.error(err);
+    }
+  };
+  document.getElementById("cml-edit-delete").onclick = () => {
+    try {
+      status.textContent = deleteEditSelection();
+    } catch (err) {
+      status.textContent = err.message || String(err);
+      console.error(err);
+    }
+  };
+  document.getElementById("cml-edit-transpose-up").onclick = () => {
+    try {
+      status.textContent = transposeEditSelection(1);
+    } catch (err) {
+      status.textContent = err.message || String(err);
+      console.error(err);
+    }
+  };
+  document.getElementById("cml-edit-transpose-down").onclick = () => {
+    try {
+      status.textContent = transposeEditSelection(-1);
+    } catch (err) {
+      status.textContent = err.message || String(err);
+      console.error(err);
+    }
+  };
   document.getElementById("cml-low-graphics").onclick = toggleLowGraphicsMode;
   document.getElementById("cml-extra-low-graphics").onclick = toggleExtraLowGraphicsMode;
   document.getElementById("cml-audio-import").onclick = () => document.getElementById("cml-audio-file").click();
@@ -4143,6 +4954,19 @@
     if (file) {
       try {
         status.textContent = await importCustomInstrumentFile(file);
+      } catch (err) {
+        status.textContent = err.message || String(err);
+        console.error(err);
+      }
+    }
+    event.target.value = "";
+  };
+  document.getElementById("cml-soundfont-import").onclick = () => document.getElementById("cml-soundfont-file").click();
+  document.getElementById("cml-soundfont-file").onchange = async (event) => {
+    const file = event.target.files && event.target.files[0];
+    if (file) {
+      try {
+        status.textContent = await importSoundFontFile(file);
       } catch (err) {
         status.textContent = err.message || String(err);
         console.error(err);
@@ -4184,14 +5008,16 @@
   };
   window.addEventListener("resize", window.__cmlDarkModeSurfaceHandler, true);
 
-  window[PATCH_MARK] = { sm, state, patchHeldPlayback, patchEnhancedDrumCanvas, patchSaveAndHistory, installLongNoteEditor, applySettings, unsmush, toggleHeldMode, toggleCleanMode, setCleanMode, toggleDarkMode, setDarkMode, patchDarkModeCanvas, setNoteLabels, toggleNoteLabels, toggleAllTrackMode, setAllTrackMode, toggleAllTracksInLow, setAllTracksInLow, toggleLowGraphicsMode, setLowGraphicsMode, toggleExtraLowGraphicsMode, setExtraLowGraphicsMode, cycleGlobalInstrument, updateGlobalInstrumentButton, importWebInstrumentUrl, patchGridAnimations, refreshInstrumentGrid, refreshPercussionGrid, addTrack, deleteTrack, resetCurrentClip, resetAll, undoModChange, redoModChange, exportJson, importJsonFile, importAudioClipFile, importCustomInstrumentFile, splitTracksByOctave };
+  window[PATCH_MARK] = { sm, state, patchHeldPlayback, patchEnhancedDrumCanvas, patchSaveAndHistory, installLongNoteEditor, installEditSelectionTools, applySettings, unsmush, toggleHeldMode, toggleCleanMode, setCleanMode, toggleDarkMode, setDarkMode, patchDarkModeCanvas, setNoteLabels, toggleNoteLabels, toggleEditSelectMode, copyEditSelection, deleteEditSelection, transposeEditSelection, setEditPasteArmed, toggleAllTrackMode, setAllTrackMode, toggleAllTracksInLow, setAllTracksInLow, toggleLowGraphicsMode, setLowGraphicsMode, toggleExtraLowGraphicsMode, setExtraLowGraphicsMode, cycleGlobalInstrument, updateGlobalInstrumentButton, importWebInstrumentUrl, patchGridAnimations, refreshInstrumentGrid, refreshPercussionGrid, addTrack, deleteTrack, resetCurrentClip, resetAll, undoModChange, redoModChange, exportJson, importJsonFile, importAudioClipFile, importCustomInstrumentFile, importSoundFontFile, splitTracksByOctave };
   patchHeldPlayback();
   patchEnhancedDrumPlayback();
   patchEnhancedDrumCanvas();
   patchSaveAndHistory();
   installLongNoteEditor();
+  installEditSelectionTools();
   patchGridAnimations();
   patchDarkModeCanvas();
+  ensureCmlFonts();
   markDarkModeSurfaces();
   document.body.classList.toggle("cml-dark-mode", state.darkMode);
   updateDarkModeButton();
@@ -4199,6 +5025,8 @@
   setAllTrackMode(state.allTrackMode);
   setAllTracksInLow(state.allTracksInLow);
   setNoteLabels(state.noteLabels);
+  updateEditButtons();
+  restoreModExtrasFromAutosave();
   ensureEventTracks();
   setCleanMode(false);
   renderTracks();
