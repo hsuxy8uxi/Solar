@@ -1,1 +1,1 @@
-JSON import crash fix done by @CatPrinceHQ2 / @catprince.hq on TikTok. Thanks!
+JSON import crash fix done by @CatPrinceHQ / @catprince.hq on TikTok. Thanks!
